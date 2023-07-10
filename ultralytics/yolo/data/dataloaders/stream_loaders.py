@@ -159,7 +159,7 @@ class LoadScreenshots:
 
 class LoadImages:
     # YOLOv8 image/video dataloader, i.e. `yolo predict source=image.jpg/vid.mp4`
-    def __init__(self, path, imgsz=640, vid_stride=1):
+    def __init__(self, path, imgsz=640, vid_stride=1, bs=128):
         """Initialize the Dataloader and raise FileNotFoundError if file not found."""
         if isinstance(path, str) and Path(path).suffix == '.txt':  # *.txt file with img/vid/dir on each line
             path = Path(path).read_text().rsplit()
@@ -185,7 +185,7 @@ class LoadImages:
         self.video_flag = [False] * ni + [True] * nv
         self.mode = 'image'
         self.vid_stride = vid_stride  # video frame-rate stride
-        self.bs = 1
+        self.bs = bs
         if any(videos):
             self.orientation = None  # rotation degrees
             self._new_video(videos[0])  # new video
@@ -206,12 +206,20 @@ class LoadImages:
             raise StopIteration
         path = self.files[self.count]
 
+        im0s = []
+
         if self.video_flag[self.count]:
             # Read video
             self.mode = 'video'
             for _ in range(self.vid_stride):
                 self.cap.grab()
-            success, im0 = self.cap.retrieve()
+            
+            for _ in range(self.bs):
+                success, im0 = self.cap.read()
+                if not success:
+                    break
+                im0s.append(im0)
+            
             while not success:
                 self.count += 1
                 self.cap.release()
@@ -221,7 +229,7 @@ class LoadImages:
                 self._new_video(path)
                 success, im0 = self.cap.read()
 
-            self.frame += 1
+            self.frame += self.bs
             # im0 = self._cv2_rotate(im0)  # for use if cv2 autorotation is False
             s = f'video {self.count + 1}/{self.nf} ({self.frame}/{self.frames}) {path}: '
 
@@ -233,7 +241,7 @@ class LoadImages:
                 raise FileNotFoundError(f'Image Not Found {path}')
             s = f'image {self.count}/{self.nf} {path}: '
 
-        return [path], [im0], self.cap, s
+        return [path] * self.bs, im0s, self.cap, s
 
     def _new_video(self, path):
         """Create a new video capture object."""
