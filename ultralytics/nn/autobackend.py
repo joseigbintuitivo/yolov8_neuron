@@ -121,16 +121,18 @@ class AutoBackend(nn.Module):
                 LOGGER.info(f'Loading {w} for Neuronx (NeuronCore-v2) inference...')
                 check_requirements(('torch_neuronx', ))
                 torch_neuronx = __import__('torch_neuronx')
+                # Using DataParallel to speed-up inference and leverage both NC
+                model = torch_neuronx.DataParallel(  
+                    torch.jit.load(w, _extra_files=extra_files, map_location=device)
+                )
             elif neuron:
                 LOGGER.info(f'Loading {w} for Neuron (NeuronCore-v1) inference...')
                 check_requirements(('torch_neuron', ))
                 torch_neuron = __import__('torch_neuron')
+                model = torch.jit.load(w, _extra_files=extra_files, map_location=device)
             else:
                 LOGGER.info(f'Loading {w} for TorchScript inference...')
             extra_files = {'config.txt': ''}  # model metadata
-            model = torch_neuronx.DataParallel(
-                torch.jit.load(w, _extra_files=extra_files, map_location=device)
-            )
             model.half() if fp16 else model.float()
             if extra_files['config.txt']:  # load metadata dict
                 metadata = json.loads(extra_files['config.txt'], object_hook=lambda x: dict(x.items()))
