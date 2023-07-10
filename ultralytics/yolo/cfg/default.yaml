@@ -72,11 +72,13 @@ format: torchscript  # (str) format to export to, choices at https://docs.ultral
 keras: False  # (bool) use Kera=s
 optimize: False  # (bool) TorchScript: optimize for mobile
 int8: False  # (bool) CoreML/TF INT8 quantization
+fp8: False  # Neuron FP8_E4M3 auto-cast
 dynamic: False  # (bool) ONNX/TF/TensorRT: dynamic axes
 simplify: False  # (bool) ONNX: simplify model
 opset:  # (int, optional) ONNX: opset version
 workspace: 4  # (int) TensorRT: workspace size (GB)
 nms: False  # (bool) CoreML: add NMS
+ccargs: # Neuron: compiler args (list[str], optional)
 
 # Hyperparameters ------------------------------------------------------------------------------------------------------
 lr0: 0.01  # (float) initial learning rate (i.e. SGD=1E-2, Adam=1E-3)

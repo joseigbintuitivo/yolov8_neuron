@@ -77,11 +77,13 @@ class AutoBackend(nn.Module):
             | TensorFlow Edge TPU   | *_edgetpu.tflite |
             | PaddlePaddle          | *_paddle_model   |
             | ncnn                  | *_ncnn_model     |
+            | Neuron                | *.neuron         |
+            | Neuronx               | *.neuronx        |
         """
         super().__init__()
         w = str(weights[0] if isinstance(weights, list) else weights)
         nn_module = isinstance(weights, torch.nn.Module)
-        pt, jit, onnx, xml, engine, coreml, saved_model, pb, tflite, edgetpu, tfjs, paddle, ncnn, triton = \
+        pt, jit, onnx, xml, engine, coreml, saved_model, pb, tflite, edgetpu, tfjs, paddle, ncnn, triton, neuron, neuronx = \
             self._model_type(w)
         fp16 &= pt or jit or onnx or engine or nn_module or triton  # FP16
         nhwc = coreml or saved_model or pb or tflite or edgetpu  # BHWC formats (vs torch BCWH)
@@ -114,8 +116,17 @@ class AutoBackend(nn.Module):
             names = model.module.names if hasattr(model, 'module') else model.names  # get class names
             model.half() if fp16 else model.float()
             self.model = model  # explicitly assign for to(), cpu(), cuda(), half()
-        elif jit:  # TorchScript
-            LOGGER.info(f'Loading {w} for TorchScript inference...')
+        elif jit or neuron or neuronx:  # TorchScript / Neuron / Neuronx
+            if neuronx:
+                LOGGER.info(f'Loading {w} for Neuronx (NeuronCore-v2) inference...')
+                check_requirements(('torch_neuronx', ))
+                __import__('torch_neuronx')
+            elif neuron:
+                LOGGER.info(f'Loading {w} for Neuron (NeuronCore-v1) inference...')
+                check_requirements(('torch_neuron', ))
+                __import__('torch_neuron')
+            else:
+                LOGGER.info(f'Loading {w} for TorchScript inference...')
             extra_files = {'config.txt': ''}  # model metadata
             model = torch.jit.load(w, _extra_files=extra_files, map_location=device)
             model.half() if fp16 else model.float()
@@ -328,7 +339,7 @@ class AutoBackend(nn.Module):
 
         if self.pt or self.nn_module:  # PyTorch
             y = self.model(im, augment=augment, visualize=visualize) if augment or visualize else self.model(im)
-        elif self.jit:  # TorchScript
+        elif self.jit or self.neuron or self.neuronx:  # TorchScript
             y = self.model(im)
         elif self.dnn:  # ONNX OpenCV DNN
             im = im.cpu().numpy()  # torch to numpy
