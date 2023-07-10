@@ -117,6 +117,7 @@ class AutoBackend(nn.Module):
             model.half() if fp16 else model.float()
             self.model = model  # explicitly assign for to(), cpu(), cuda(), half()
         elif jit or neuron or neuronx:  # TorchScript / Neuron / Neuronx
+            extra_files = {'config.txt': ''}  # model metadata
             if neuronx:
                 LOGGER.info(f'Loading {w} for Neuronx (NeuronCore-v2) inference...')
                 check_requirements(('torch_neuronx', ))
@@ -132,7 +133,6 @@ class AutoBackend(nn.Module):
                 model = torch.jit.load(w, _extra_files=extra_files, map_location=device)
             else:
                 LOGGER.info(f'Loading {w} for TorchScript inference...')
-            extra_files = {'config.txt': ''}  # model metadata
             model.half() if fp16 else model.float()
             if extra_files['config.txt']:  # load metadata dict
                 metadata = json.loads(extra_files['config.txt'], object_hook=lambda x: dict(x.items()))
