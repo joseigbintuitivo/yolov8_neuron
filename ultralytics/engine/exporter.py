@@ -17,6 +17,8 @@ TensorFlow Edge TPU     | `edgetpu`                 | yolov8n_edgetpu.tflite
 TensorFlow.js           | `tfjs`                    | yolov8n_web_model/
 PaddlePaddle            | `paddle`                  | yolov8n_paddle_model/
 ncnn                    | `ncnn`                    | yolov8n_ncnn_model/
+Neuron                  | `neuron`                  | yolov8n.neuron
+Neuronx                 | `neuronx`                 | yolov8n.neuronx
 
 Requirements:
     $ pip install "ultralytics[export]"
@@ -41,6 +43,8 @@ Inference:
                          yolov8n.tflite             # TensorFlow Lite
                          yolov8n_edgetpu.tflite     # TensorFlow Edge TPU
                          yolov8n_paddle_model       # PaddlePaddle
+                         yolov8n.neuron             # Neuron (NeuronCore-v1)
+                         yolov8n.neuronx            # Neuronx (NeuronCore-v2+)
 
 TensorFlow.js:
     $ cd .. && git clone https://github.com/zldrobit/tfjs-yolov5-example.git && cd tfjs-yolov5-example
@@ -59,6 +63,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+import pkg_resources as pkg
 import torch
 
 from ultralytics.cfg import get_cfg
@@ -92,7 +97,9 @@ def export_formats():
         ['TensorFlow Edge TPU', 'edgetpu', '_edgetpu.tflite', True, False],
         ['TensorFlow.js', 'tfjs', '_web_model', True, False],
         ['PaddlePaddle', 'paddle', '_paddle_model', True, True],
-        ['ncnn', 'ncnn', '_ncnn_model', True, True], ]
+        ['ncnn', 'ncnn', '_ncnn_model', True, True], 
+        ['Neuron', 'neuron', '.neuron', True, False],
+        ['Neuronx', 'neuronx', '.neuronx', True, False], ]
     return pandas.DataFrame(x, columns=['Format', 'Argument', 'Suffix', 'CPU', 'GPU'])
 
 
@@ -163,7 +170,7 @@ class Exporter:
         flags = [x == fmt for x in fmts]
         if sum(flags) != 1:
             raise ValueError(f"Invalid export format='{fmt}'. Valid formats are {fmts}")
-        jit, onnx, xml, engine, coreml, saved_model, pb, tflite, edgetpu, tfjs, paddle, ncnn = flags  # export booleans
+        jit, onnx, xml, engine, coreml, saved_model, pb, tflite, edgetpu, tfjs, paddle, ncnn, neuron, neuronx = flags  # export booleans
 
         # Device
         if fmt == 'engine' and self.args.device is None:
@@ -200,7 +207,7 @@ class Exporter:
         model = model.fuse()
         for m in model.modules():
             if isinstance(m, (Detect, RTDETRDecoder)):  # Segment and Pose use Detect base class
-                m.dynamic = self.args.dynamic
+                m.dynamic = not (neuron or neuronx) and self.args.dynamic  # Neuron does not require grid reconstruct
                 m.export = True
                 m.format = self.args.format
             elif isinstance(m, C2f) and not any((saved_model, pb, tflite, edgetpu, tfjs)):
@@ -269,6 +276,10 @@ class Exporter:
                 f[9], _ = self.export_tfjs()
         if paddle:  # PaddlePaddle
             f[10], _ = self.export_paddle()
+        if neuron:
+            f[11], _ = self.export_neuron()
+        if neuronx:
+            f[12], _ = self.export_neuronx()
         if ncnn:  # ncnn
             f[11], _ = self.export_ncnn()
 
@@ -436,6 +447,80 @@ class Exporter:
 
         pytorch2paddle(module=self.model, save_dir=f, jit_type='trace', input_examples=[self.im])  # export
         yaml_save(Path(f) / 'metadata.yaml', self.metadata)  # add metadata.yaml
+        return f, None
+    
+    @try_export
+    def export_neuron(self, prefix=colorstr('Neuron:')):
+        """YOLOv8 Neuron model export."""
+        requirements = [f'torch_neuron=={torch.__version__.split("+")[0]}.*', 'neuron-cc>=1.3']
+        check_requirements(requirements, cmds='--extra-index-url https://pip.repos.neuron.amazonaws.com')
+        import torch_neuron
+
+        LOGGER.info(
+            f'\n{prefix} starting export with torch_neuron {torch_neuron.__version__} and neuron-cc {pkg.require("neuron-cc")[0].version}...'
+        )
+        LOGGER.warning(f'{prefix} WARNING ⚠️ export may fail if requirement numpy<=1.21.6,>=1.20 does not satisfy')
+
+        neuron_cc_args = ['--fast-math', 'none']
+        f = str(self.file).replace(self.file.suffix, '.neuron')
+        if self.args.half:
+            neuron_cc_args = ['--fast-math', 'fp32-cast-all-fp16']
+            f = str(self.file).replace(self.file.suffix, '_fp16.neuron')
+        if self.args.ccargs:
+            ccargs_check = isinstance(self.args.ccargs,
+                                      (list, tuple)) and all(isinstance(arg, str) for arg in self.args.ccargs)
+            assert ccargs_check, 'ccargs type error, expected List[str] | Tuple[str]'
+            neuron_cc_args.extend(self.args.ccargs)  # will supersede existing args
+
+        neuron_model = torch_neuron.trace(
+            self.model,
+            example_inputs=[self.im],
+            compiler_args=neuron_cc_args,
+            optimizations=[torch_neuron.Optimization.FLOAT32_TO_FLOAT16] if self.args.half else [],
+            dynamic_batch_size=bool(self.args.dynamic),
+            strict=False,
+        )
+        extra_files = {'config.txt': json.dumps(self.metadata)}
+        neuron_model.save(f, _extra_files=extra_files)
+        return f, None
+
+    @try_export
+    def export_neuronx(self, prefix=colorstr('Neuronx:')):
+        """YOLOv8 Neuronx model export."""
+        requirements = [f'torch_neuronx=={torch.__version__.split("+")[0]}.*', 'neuronx-cc==2.*']
+        check_requirements(requirements, cmds='--extra-index-url https://pip.repos.neuron.amazonaws.com')
+        import torch_neuronx
+
+        LOGGER.info(
+            f'\n{prefix} starting export with torch_neuronx {torch_neuronx.__version__} and neuronx-cc {pkg.require("neuronx-cc")[0].version}...'
+        )
+        LOGGER.warning(
+            f'{prefix} WARNING ⚠️ export may fail if neuron runtime is not installed (does not require neuron hardware)'
+        )
+
+        neuronx_cc_args = ['--auto-cast', 'none']
+        f = str(self.file).replace(self.file.suffix, '.neuronx')
+        if self.args.half:
+            neuronx_cc_args = ['--auto-cast', 'all', '--auto-cast-type', 'fp16']
+            f = str(self.file).replace(self.file.suffix, '_fp16.neuronx')
+        elif self.args.fp8:
+            neuronx_cc_args = ['--auto-cast', 'all', '--auto-cast-type', 'fp8_e4m3']
+            f = str(self.file).replace(self.file.suffix, '_fp8.neuronx')
+        if self.args.ccargs:
+            ccargs_check = isinstance(self.args.ccargs,
+                                      (list, tuple)) and all(isinstance(arg, str) for arg in self.args.ccargs)
+            assert ccargs_check, 'ccargs type error, expected List[str] | Tuple[str]'
+            neuronx_cc_args.extend(self.args.ccargs)  # will supersede existing args
+
+        neuronx_model = torch_neuronx.trace(
+            self.model,
+            example_inputs=self.im,
+            compiler_args=neuronx_cc_args,
+        )
+        if self.args.dynamic:
+            neuronx_model = torch_neuronx.dynamic_batch(neuronx_model)
+        extra_files = {'config.txt': json.dumps(self.metadata)}
+        neuronx_model.save(f, _extra_files=extra_files)
         return f, None
 
     @try_export
